@@ -3,60 +3,104 @@
 Venom run executors (script, HTTP Request, etc. ) and assertions.
 It can also output xUnit results files.
 
-<img src="./venom.gif" alt="Venom Demonstration" width="80%">
+<img src="./venom.gif" alt="Venom Demonstration">
 
-## Command Line
+* [Command Line](#command-line)
+* [Docker image](#docker-image)
+* [TestSuites](#testsuites)
+* [Executors](#executors)
+  * [User defined executors](#user-defined-executors)
+* [Variables](#variables)
+  * [Testsuite variables](#testsuite-variables)
+    * [Variable on Command Line](#variable-on-command-line)
+    * [Variable Definitions Files](#variable-definitions-files)
+    * [Environment Variables](#environment-variables)
+    * [Variable helpers](#variable-helpers)
+  * [How to use outputs from a test step as input of another test step](#how-to-use-outputs-from-a-test-step-as-input-of-another-test-step)
+  * [Builtin venom variables](#builtin-venom-variables)
+* [Tests Report](#tests-report)
+* [Assertion](#assertion)
+  * [Keywords](#keywords)
+* [Advanced usage](#advanced-usage)
+  * [Debug your testsuites](#debug-your-testsuites)
+  * [Skip testcase](#skip-testcase)
+* [Use venom in CI](#use-venom-in-ci)
+* [Hacking](#hacking)
+* [License](#license)
 
-Download latest release from https://github.com/ovh/venom/releases
+# Command Line
 
+Download latest binary release from https://github.com/ovh/venom/releases
 
 ```bash
 $ venom run -h
-Run Tests
+
+$ venom run *.yml
+
+Notice that variables initialized with -var-from-file argument can be overrided with -var argument.
 
 Usage:
   venom run [flags]
 
 Flags:
-      --env                    Inject environment variables. export FOO=BAR -> you can use {{.FOO}} in your tests (default true)
-      --exclude strings        --exclude filaA.yaml --exclude filaB.yaml --exclude fileC*.yaml
-      --format string          --format:yaml, json, xml, tap (default "xml")
-  -h, --help                   help for run
-      --log string             Log Level : debug, info or warn (default "warn")
-      --no-check-variables     Don't check variables before run
-      --output-dir string      Output Directory: create tests results file inside this directory
-      --parallel int           --parallel=2 : launches 2 Test Suites in parallel (default 1)
-      --profiling              Enable Mem / CPU Profile with pprof
-      --stop-on-failure        Stop running Test Suite on first Test Case failure
-      --strict                 Exit with an error code if one test fails
-      --var strings            --var cds='cds -f config.json' --var cds2='cds -f config.json'
-      --var-from-file strings  --var-from-file filename.yaml --var-from-file filename2.yaml : hcl|json|yaml, must contains map[string]string'
+      --format string           --format:yaml, json, xml, tap (default "xml")
+  -h, --help                    help for run
+      --output-dir string       Output Directory: create tests results file inside this directory
+      --stop-on-failure         Stop running Test Suite on first Test Case failure
+      --var strings             --var cds='cds -f config.json' --var cds2='cds -f config.json'
+      --var-from-file strings   --var-from-file filename.yaml --var-from-file filename2.yaml: yaml, must contains a dictionnary
+  -v, --verbose count           verbose. -vv to very verbose and -vvv to very verbose with CPU Profiling
 ```
 
-## Executors
+You can define the arguments with environment variables:
 
-* **dbfixtures**: https://github.com/ovh/venom/tree/master/executors/dbfixtures
-* **exec**: https://github.com/ovh/venom/tree/master/executors/exec `exec` is the default type for a step
-* **http**: https://github.com/ovh/venom/tree/master/executors/http
-* **imap**: https://github.com/ovh/venom/tree/master/executors/imap
-* **kafka** https://github.com/ovh/venom/tree/master/executors/kafka
-* **ovhapi**: https://github.com/ovh/venom/tree/master/executors/ovhapi
-* **readfile**: https://github.com/ovh/venom/tree/master/executors/readfile
-* **redis**: https://github.com/ovh/venom/tree/master/executors/redis
-* **smtp**: https://github.com/ovh/venom/tree/master/executors/smtp
-* **ssh**: https://github.com/ovh/venom/tree/master/executors/ssh
-* **web**: https://github.com/ovh/venom/tree/master/executors/web
-* **grpc**: https://github.com/ovh/venom/tree/master/executors/grpc
-* **rabbitmq**: https://github.com/ovh/venom/tree/master/executors/rabbitmq
-* **sql**: https://github.com/ovh/venom/tree/master/executors/sql
+```bash
+venom run my-test-suite.yml --format=json
+# is the same as
+VENOM_FORMAT=json venom run my-test-suite.yml
+```
 
-## TestSuite files
+```
+      --format           -  example: VENOM_FORMAT=json
+      --output-dir       -  example: VENOM_OUTPUT_DIR=.
+      --stop-on-failure  -  example: VENOM_STOP_ON_FAILURE=true
+      --var              -  example: VENOM_VAR="foo=bar"
+      --var-from-file    -  example: VENOM_VAR_FROM_FILE="fileA.yml fileB.yml"
+      -v                 -  example: VENOM_VERBOSE=2 is the same as -vv
+```
 
-* Run `venom template`
-* Examples: https://github.com/ovh/cds/tree/master/tests
+You can define the venom settings using a configuration file `.venomrc`. This configuration file should be placed in the current directory or in the home directory.
 
+```yml
+variables: 
+  - foo=bar
+variables_files:
+  - my_var_file.yaml
+stop_on_failure: true
+format: xml
+output_dir: output
+verbosity: 3
+```
 
-### Example:
+Please note that command line flags overrides the configuration file. Configuration file overrides the environment variables.
+
+# Docker image
+
+Venom can be started inside a docker image with:
+```bash
+$ git clone git@github.com:ovh/venom.git
+$ cd venom
+$ docker run -it $(docker build -q .) --rm -v $(pwd)/outputs:/outputs -v $(pwd):/tests run /tests/testsuite.yaml
+```
+
+# TestSuites
+
+A test suite is a collection of test cases that are intended to be used to test a software program to show that it has some specified set of behaviours.
+A test case is a specification of the inputs, execution conditions, testing procedure, and expected results that define a single test to be executed to achieve a particular software testing objective, such as to exercise a particular program path or to verify compliance with a specific requirement.
+
+In `venom` the testcases are executed sequentially within a testsuite. Each testcase is an ordered set of steps. Each step is based on an `executor` that enable some specific kind of behavior.
+
+In `venom` a testsuite is written in one `yaml` file respecting the following structure.
 
 ```yaml
 
@@ -101,34 +145,169 @@ testcases:
 
 ```
 
-Using variables and reuse results
+# Executors
 
-```yaml
-name: MyTestSuiteTmpl
-vars:
-  api.foo: 'http://api/foo'
-  second: 'venomWithTmpl'
+* **dbfixtures**: https://github.com/ovh/venom/tree/master/executors/dbfixtures
+* **exec**: https://github.com/ovh/venom/tree/master/executors/exec `exec` is the default type for a step
+* **grpc**: https://github.com/ovh/venom/tree/master/executors/grpc
+* **http**: https://github.com/ovh/venom/tree/master/executors/http
+* **imap**: https://github.com/ovh/venom/tree/master/executors/imap
+* **kafka** https://github.com/ovh/venom/tree/master/executors/kafka
+* **odbc**: https://github.com/ovh/venom/tree/master/executors/plugins/odbc
+* **ovhapi**: https://github.com/ovh/venom/tree/master/executors/ovhapi
+* **rabbitmq**: https://github.com/ovh/venom/tree/master/executors/rabbitmq
+* **readfile**: https://github.com/ovh/venom/tree/master/executors/readfile
+* **redis**: https://github.com/ovh/venom/tree/master/executors/redis
+* **smtp**: https://github.com/ovh/venom/tree/master/executors/smtp
+* **sql**: https://github.com/ovh/venom/tree/master/executors/sql
+* **ssh**: https://github.com/ovh/venom/tree/master/executors/ssh
+* **web**: https://github.com/ovh/venom/tree/master/executors/web
 
+## User defined executors
+
+You can define an executor with a single yaml file. This is a good way to abstract technical or functional behaviors and reuse them in complex testsuites.
+
+Example:
+
+file `lib/customA.yml`
+```yml
+executor: hello
+input:
+  myarg: {}
+steps:
+- script: echo "{\"hello\":\"{{.input.myarg}}\"}"
+  assertions:
+  - result.code ShouldEqual 0
+output:
+  display:
+    hello: "{{.result.systemoutjson.hello}}"
+```
+
+file `testsuite.yml`
+```yml
+name: testsuite with a user executor
 testcases:
 - name: testA
   steps:
-  - type: exec
-    script: echo '{{.api.foo}}'
+  - type: hello
+    myarg: World
     assertions:
-    - result.code ShouldEqual 0
-    - result.systemout ShouldEqual http://api/foo
-
-- name: testB
-  steps:
-  - type: exec
-    script: echo 'XXX{{.testA.result.systemout}}YYY'
-    assertions:
-    - result.code ShouldEqual 0
-    - result.systemout ShouldEqual XXXhttp://api/fooYYY
-
+    - result.display.hello ShouldContainSubstring World
 ```
 
-Extract variable on the fly from results and reuse it in step after
+venom will load user's executors from the directory `lib/`
+- from the path of the testsuite
+- from the venom path
+
+```bash
+$ venom run testsuite.yml # lib/*.yml files will be loaded as executors.
+```
+
+# Variables
+
+## Testsuite variables
+
+You can define variable on the `testsuite` level.
+
+```yaml
+name: myTestSuite
+vars:
+  foo: foo
+  biz:
+    bar: bar
+
+testcases:
+- name: first-test-case
+  steps:
+  - type: exec
+    script: echo '{{.foo}} {{.biz.bar}}'
+    assertions:
+    - result.code ShouldEqual 0
+    - result.systemout ShouldEqual "foo bar"
+...
+```
+
+Each user variable used in testsuite must be declared in this section. You can override its value at runtime in a number of ways:
+- Individually, with the `--var` command line option.
+- In variable definitions files, either specified on the command line `--var-from-file`.
+- As environment variables.
+
+
+### Variable on Command Line
+
+To specify individual variables on the command line, use the `--var` option when running the `venom run` commands:
+
+```
+venom run --var="foo=bar"
+venom run --var='foo_list=["biz","buz"]'
+venom run --var='foo={"biz":"bar","biz":"barr"}'
+```
+
+The `--var` option can be used many times in a single command.
+
+### Variable Definitions Files
+
+To set lots of variables, it is more convenient to specify their values in a variable definitions file. This file is a YAML dictionnary and you have specify that file on the command line with `--var-from-file`
+
+### Environment Variables
+
+As a fallback for the other ways of defining variables, `venom` searches the environment of its own process for environment variables named `VENOM_VAR_` followed by the name of a declared variable.
+
+```bash
+$ export VENOM_VAR_foo=bar
+$ venom run *.yml
+```
+
+### Variable helpers
+
+Available helpers and some examples:
+
+- `abbrev`
+- `abbrevboth`
+- `trunc`
+- `trim`
+- `upper`: {{.myvar | upper}}
+- `lower`: {{.myvar | lower}}
+- `title`
+- `untitle`
+- `substr`
+- `repeat`
+- `trimall`
+- `trimAll`
+- `trimSuffix`
+- `trimPrefix`
+- `nospace`
+- `initials`
+- `randAlphaNum`
+- `randAlpha`
+- `randASCII`
+- `randNumeric`
+- `swapcase`
+- `shuffle`
+- `snakecase`
+- `camelcase`
+- `quote`
+- `squote`
+- `indent`
+- `nindent`
+- `replace`: {{.myvar | replace "_" "."}}
+- `plural`
+- `default`: {{.myvar | default ""}}
+- `empty`
+- `coalesce`
+- `toJSON`
+- `toPrettyJSON`
+- `b64enc`
+- `b64dec` {{.result.bodyjson | b64enc}}
+- `escape`: replace ‘_‘, ‘/’, ‘.’ by ‘-’
+
+
+## How to use outputs from a test step as input of another test step
+
+To be able to reuse a property from a teststep in a following testcase or step, you have to extract the variable, as the following example. 
+
+After the first step execution, `venom` extracts a value using a regular expression `foo with a ([a-z]+) here` from the content of the `result.systemout` property returned by the `executor`.
+Then it is able to reuse this variable with the name `testA.myvariable` with `testA` corresponding to the name of the testcase.
 
 ```yaml
 name: MyTestSuite
@@ -151,7 +330,7 @@ testcases:
     - result.systemout ShouldContainSubstring bar
 ```
 
-Builtin venom variables
+## Builtin venom variables
 
 ```yaml
 name: MyTestSuite
@@ -168,107 +347,29 @@ Builtin variables:
 
 * {{.venom.testsuite}}
 * {{.venom.testsuite.filename}}
+* {{.venom.testsuite.shortName}}
+* {{.venom.testsuite.workdir}}
 * {{.venom.testcase}}
 * {{.venom.teststep.number}}
 * {{.venom.datetime}}
 * {{.venom.timestamp}}
 
-Venom templating
-
-Beside venom variables, it is possible to use templating functions:
-
-* expandEnv : {{expandEnv <filename>}}, rewrites the named file and replaces ${var} or $var in the string according to the values of the current environment variables. References to undefined variables are replaced by the empty string. You can use it a script step for instance: `script: cat {{expandEnv ./myFile}}`. 
-
-### Testsuite Versions
-
-#### Version 2
-
-On this new version, venom use the testsuite folder as the basepath instead of location of venom execution.
-
-
-Considering this workspace:
-
-```yaml
-
-tests/
-   testsuiteA/
-      testsuite.yml
-      testa.json
-```
-
-On version 1
-
-```yaml
-
-name: TestSuite Read File
-testcases:
-- name: TestCase Read File
-  steps:
-  - type: readfile
-    path: testa.json
-    assertions:
-      - result.contentjson.foo ShouldEqual bar
-```
-
-If you execute ```venom run *``` into *tests/* folder, venom will try to find testa.json on tests/testa.json and will failed.
-You must execute venom on the testsuite dir.
-
-On version 2, venom use as basepath the testsuite file. So no matter where you execute venom command, testa.json will be found.
-
-To specify the version 2, add *version* property on the testsuite:
-
-```yaml
-
-version: "2"
-name: TestSuite Read File
-testcases:
-- name: TestCase Read File
-  steps:
-  - type: readfile
-    path: testa.json
-    assertions:
-      - result.contentjson.foo ShouldEqual bar
-```
-
-
-## RUN Venom locally on CDS Integration Tests
-
-```bash
-cd $GOPATH/src/github.com/ovh/cds/tests
-venom run --var cdsro='cds -f $HOME/.cds/it.user.ro.json' --var cds='cds -f $HOME/.cds/it.user.rw.json' --parallel=5
-```
-
-## RUN Venom with file var
-
-vars.yaml :
-```yaml
-cdsro: 'cds -f $HOME/.cds/it.user.ro.json'
-cds: 'cds -f $HOME/.cds/it.user.rw.json'
-```
-
-```bash
-cd $GOPATH/src/github.com/ovh/cds/tests
-venom run --var-from-file vars.yaml --parallel=5
-```
-
-## RUN Venom, with an export xUnit
+# Tests Report
 
 ```bash
 venom run --format=xml --output-dir="."
 ```
 
-## Assertion
+Available formats: jUnit (xml), json, yaml, tap reports
 
-### Keywords
+# Assertion
+
+## Keywords
 
 * ShouldEqual
 * ShouldNotEqual
 * ShouldAlmostEqual
 * ShouldNotAlmostEqual
-* ShouldResemble
-* ShouldNotResemble
-* ShouldPointTo
-* ShouldNotPointTo
 * ShouldBeNil
 * ShouldNotBeNil
 * ShouldBeTrue
@@ -299,166 +400,121 @@ venom run --format=xml --output-dir="."
 * ShouldNotBeBlank
 * ShouldContainSubstring
 * ShouldNotContainSubstring
-* ShouldEqualWithout
 * ShouldEqualTrimSpace
 * ShouldHappenBefore
 * ShouldHappenOnOrBefore
 * ShouldHappenAfter
 * ShouldHappenOnOrAfter
 * ShouldHappenBetween
-* ShouldHappenOnOrBetween
-* ShouldNotHappenOnOrBetween
-* ShouldHappenWithin
-* ShouldNotHappenWithin
-* ShouldBeChronological
 * ShouldNotExist
 
-Most assertion keywords documentation can be found on [smartystreets/assertions README](https://github.com/smartystreets/assertions/blob/master/README.md#usage).
+Most assertion keywords documentation can be found on https://pkg.go.dev/github.com/ovh/venom/assertions.
 
-### Write your executor
 
-An executor have to implement this interface
+# Advanced usage
+## Debug your testsuites
 
-```go
-
-// Executor execute a testStep.
-type Executor interface {
-	// Run run a Test Step
-	Run(ctx context.Content, venom.Logger, TestStep) (ExecutorResult, error)
-}
+There is two ways to debug a testsuite:
+ - use `-v` flag on venom binary.
+   - `$ venom run -v test.yml` will output a venom.log file
+   - `$ venom run -vv test.yml` will output a venom.log file and dump.json files for each teststep.
+ - use `info` keyword your teststep:
+`test.yml` file:
+```yml
+name: Exec testsuite
+testcases:
+- name: testA
+  steps:
+  - type: exec
+    script: echo 'foo with a bar here'
+    info:
+      - this a first info
+      - and a second...
+- name: cat json
+  steps:
+  - script: cat exec/testa.json
+    info: "the value of result.systemoutjson is {{.result.systemoutjson}}"
+    assertions:
+    - result.systemoutjson.foo ShouldContainSubstrin bar
 ```
 
-Example
+```bash
+$ venom run test.yml
 
-```go
+# output:
 
+ • Exec testsuite (exec.yml)
+ 	• testA SUCCESS
+	  [info] this a first info (exec.yml:8)
+	  [info] and a second... (exec.yml:9)
+ 	• testB SUCCESS
+ 	• sleep 1 SUCCESS
+ 	• cat json SUCCESS
+	  [info] the value of result.systemoutjson is map[foo:bar] (exec.yml:34)
+```
 
-// Name of executor
-const Name = "myexecutor"
+## Skip testcase
 
-// New returns a new Executor
-func New() venom.Executor {
-	return &Executor{}
-}
+It is possible to skip `testcase` according to some `assertions`. For instance, the following example will skip the last testcase.
 
-// Executor struct
-type Executor struct {
-	Command string `json:"command,omitempty" yaml:"command,omitempty"`
-}
+```yaml
+name: "Skip testsuite"
+vars:
+  foo: bar
 
-// Result represents a step result
-type Result struct {
-	Code        int    `json:"code,omitempty" yaml:"code,omitempty"`
-	Command     string `json:"command,omitempty" yaml:"command,omitempty"`
-	Systemout   string   `json:"systemout,omitempty" yaml:"systemout,omitempty"` // put in testcase.Systemout by venom if present
-	Systemerr   string   `json:"systemerr,omitempty" yaml:"systemerr,omitempty"` // put in testcase.Systemerr by venom if present
-	Executor    Executor `json:"executor,omitempty" yaml:"executor,omitempty"`
-}
+testcases:
+- name: init
+  steps:
+  - type: exec
+    script: echo {{.foo}}
+    assertions:
+    - result.code ShouldEqual 0
+    - result.systemout ShouldContainSubstring bar
 
-// GetDefaultAssertions return default assertions for this executor
-// Optional
-func (Executor) GetDefaultAssertions() venom.StepAssertions {
-	return venom.StepAssertions{Assertions: []string{"result.code ShouldEqual 0"}}
-}
+- name: do-not-skip-this
+  skip: 
+  - foo ShouldNotBeEmpty
+  steps:
+  - type: exec
+    script: exit 0
 
-// Run execute TestStep
-func (Executor) Run(ctx context.Context, l venom.Logger, step venom.TestStep) (venom.ExecutorResult, error) {
-
-	// transform step to Executor Instance
-	var e Executor
-	if err := mapstructure.Decode(step, &e); err != nil {
-		return nil, err
-	}
-
-	// to something with e.Command here...
-	//...
-
-	systemout := "foo"
-	ouputCode := 0
-
-	// prepare result
-	r := Result{
-		Code:    ouputCode, // return Output Code
-		Command: e.Command, // return Command executed
-		Systemout: systemout, // return Output string
-		Executor: e, // return executor, useful for display Executor context in failure
-	}
-
-	return dump.ToMap(r)
-}
+- name: skip-this
+  skip: 
+    - foo ShouldBeEmpty
+  steps:
+  - type: exec
+    script: command_not_found
+    assertions:
+    - result.code ShouldEqual 0
 
 ```
 
-Feel free to open a Pull Request with your executors.
+# Use venom in CI
 
-
-## TestCase Context
-
-TestCase Context allows you to inject data in all steps.
-
-Define a context is optional, but can be useful to keep data between test steps on a testcase.
-
-### Write your TestCase Context
-
-A TestCase Context has to implement this interface
-
-```go
-
-type TestCaseContext interface {
-	Init() error
-	Close() error
-	SetTestCase(tc TestCase)
-	GetName() string
-}
-```
-
-Example
-
-```go
-// Context Type name
-const Name = "default"
-
-// New returns a new TestCaseContext
-func New() venom.TestCaseContext {
-	ctx := &DefaultTestCaseContext{}
-	ctx.Name = Name
-	return ctx
-}
-
-// DefaultTestCaseContext represents the context of a testcase
-type DefaultTestCaseContext struct {
-	venom.CommonTestCaseContext
-	datas map[string]interface{}
-}
-
-// Init Initialize the context
-func (tcc *DefaultTestCaseContext) Init() error {
-	return nil
-}
-
-// Close the context
-func (tcc *DefaultTestCaseContext) Close() error {
-	return nil
-}
-```
-
-Methods SetTestCase and GetName are implemented by CommonTestCaseContext
-
-# Dependencies
-
-Individual packages were updated using the rough procedure:
-
-1. `dep ensure`
-2. `dep ensure -update ${PACKAGE}`
-3. `dep prune`
-4. `go build`
-
+Venom can be use on dev environement or your CI server.
+To display correctly the venom output, you probably will have to export the environment variable `IS_TTY=true` before running venom.
 
 # Hacking
 
-You've developed a new cool feature? Fixed an annoying bug? We'd be happy
-to hear from you! Make sure to read [CONTRIBUTING.md](./CONTRIBUTING.md) before.
+[How to write your own executor?](https://github.com/ovh/venom/tree/master/executors#venom-executor)
+
+How to compile?
+```bash
+$ make build
+```
 
 # License
 
-This work is under the BSD license, see the [LICENSE](LICENSE) file for details.
+Copyright 2020 OVH SAS
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.

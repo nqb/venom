@@ -2,7 +2,8 @@ package venom
 
 import (
 	"bufio"
-	"encoding/json"
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -11,25 +12,10 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/fatih/color"
 	"github.com/mitchellh/mapstructure"
-	"github.com/smartystreets/assertions"
+	"github.com/ovh/venom/assertions"
+	"github.com/ovh/venom/executors"
 )
-
-type testingT struct {
-	ErrorS []string
-}
-
-func (t *testingT) Error(args ...interface{}) {
-	for _, a := range args {
-		switch v := a.(type) {
-		case string:
-			t.ErrorS = append(t.ErrorS, v)
-		default:
-			t.ErrorS = append(t.ErrorS, fmt.Sprintf("%s", v))
-		}
-	}
-}
 
 type assertionsApplied struct {
 	ok        bool
@@ -39,23 +25,7 @@ type assertionsApplied struct {
 	systemerr string
 }
 
-// applyChecks apply checks on result, return true if all assertions are OK, false otherwise
-func applyChecks(executorResult *ExecutorResult, tc TestCase, stepNumber int, step TestStep, defaultAssertions *StepAssertions) assertionsApplied {
-	res := applyAssertions(*executorResult, tc, stepNumber, step, defaultAssertions)
-	if !res.ok {
-		return res
-	}
-
-	resExtract := applyExtracts(executorResult, step)
-
-	res.errors = append(res.errors, resExtract.errors...)
-	res.failures = append(res.failures, resExtract.failures...)
-	res.ok = resExtract.ok
-
-	return res
-}
-
-func applyAssertions(executorResult ExecutorResult, tc TestCase, stepNumber int, step TestStep, defaultAssertions *StepAssertions) assertionsApplied {
+func applyAssertions(r interface{}, tc TestCase, stepNumber int, step TestStep, defaultAssertions *StepAssertions) assertionsApplied {
 	var sa StepAssertions
 	var errors []Failure
 	var failures []Failure
@@ -74,6 +44,8 @@ func applyAssertions(executorResult ExecutorResult, tc TestCase, stepNumber int,
 	if len(sa.Assertions) == 0 && defaultAssertions != nil {
 		sa = *defaultAssertions
 	}
+
+	executorResult := GetExecutorResult(r)
 
 	isOK := true
 	for _, assertion := range sa.Assertions {
@@ -99,139 +71,51 @@ func applyAssertions(executorResult ExecutorResult, tc TestCase, stepNumber int,
 	return assertionsApplied{isOK, errors, failures, systemout, systemerr}
 }
 
-func getLastValidResultFromPath(path string, r ExecutorResult) (string, string) {
-	tokens := strings.Split(path, ".")
-
-	for i := len(tokens); i >= 0; i-- {
-		newPath := strings.Join(tokens[:i], ".")
-		if res, ok := r[newPath]; ok {
-			encodedData, err := json.MarshalIndent(res, "", "  ")
-			if err != nil {
-				return RemoveNotPrintableChar(fmt.Sprintf("%+v", res)), RemoveNotPrintableChar(newPath)
-			}
-			return RemoveNotPrintableChar(string(encodedData)), RemoveNotPrintableChar(newPath)
-		}
-	}
-
-	encodedData, err := json.MarshalIndent(r, "", "  ")
-	if err != nil {
-		return fmt.Sprintf("%+v", r), "."
-	}
-	return string(encodedData), "."
+type assertion struct {
+	Actual interface{}
+	Func   assertions.AssertFunc
+	Args   []interface{}
 }
 
-func check(tc TestCase, stepNumber int, assertion string, executorResult ExecutorResult) (*Failure, *Failure) {
-	lineNumberSuffix := ""
-	assert := splitAssertion(assertion)
+func parseAssertions(ctx context.Context, s string, input interface{}) (*assertion, error) {
+	dump, err := executors.Dump(input)
+	if err != nil {
+		return nil, errors.New("assertion syntax error")
+	}
+	assert := splitAssertion(s)
 	if len(assert) < 2 {
-		if lineNumber, err := findLineNumber(tc.Classname, tc.Name, stepNumber, assertion); err == nil && lineNumber > 0 {
-			lineNumberSuffix = fmt.Sprintf(":%d", lineNumber)
-		}
-		return &Failure{
-			Value: color.YellowString(
-				"Failure in %q\nIn test case %q, at step %d\nInvalid assertion %q length should be greater than 2\n",
-				tc.Classname+lineNumberSuffix,
-				tc.Name,
-				stepNumber,
-				RemoveNotPrintableChar(assertion),
-			),
-		}, nil
+		return nil, errors.New("assertion syntax error")
 	}
+	actual := dump[assert[0]]
 
-	var executorResultKeys []string
-	for k := range executorResult {
-		executorResultKeys = append(executorResultKeys, k)
-	}
-
-	actual, ok := executorResult[assert[0]]
+	f, ok := assertions.Get(assert[1])
 	if !ok {
-		if assert[1] == "ShouldNotExist" {
-			return nil, nil
-		}
-
-		if lineNumber, err := findLineNumber(tc.Classname, tc.Name, stepNumber, assertion); err == nil && lineNumber > 0 {
-			lineNumberSuffix = fmt.Sprintf(":%d", lineNumber)
-		}
-		data, path := getLastValidResultFromPath(assert[0], executorResult)
-		return &Failure{
-			Value: fmt.Sprintf(
-				color.YellowString(
-					"Failure in %q\nIn test case %q, at step %d\nCould not access %q in assertion %q.\nThis is what we have at %q:\n",
-					tc.Classname+lineNumberSuffix,
-					tc.Name,
-					stepNumber,
-					RemoveNotPrintableChar(assert[0]),
-					RemoveNotPrintableChar(assertion),
-					path,
-				) + data + "\n",
-			),
-		}, nil
-
-	} else if assert[1] == "ShouldNotExist" {
-		if lineNumber, err := findLineNumber(tc.Classname, tc.Name, stepNumber, assertion); err == nil && lineNumber > 0 {
-			lineNumberSuffix = fmt.Sprintf(":%d", lineNumber)
-		}
-		paths := strings.Split(assert[0], ".")
-		if len(paths) > 0 {
-			paths = paths[:len(paths)-1]
-		}
-		data, path := getLastValidResultFromPath(strings.Join(paths, "."), executorResult)
-		return &Failure{
-			Value: fmt.Sprintf(
-				color.YellowString(
-					"Failure in %q\nIn test case %q, at step %d\nIn assertion %q, key %q should not exist.\nThis is what we have at %q:\n",
-					tc.Classname+lineNumberSuffix,
-					tc.Name,
-					stepNumber,
-					RemoveNotPrintableChar(assertion),
-					RemoveNotPrintableChar(assert[0]),
-					path,
-				) + data + "\n",
-			),
-		}, nil
+		return nil, errors.New("assertion not supported")
 	}
 
-	f, ok := assertMap[assert[1]]
-	if !ok {
-		if lineNumber, err := findLineNumber(tc.Classname, tc.Name, stepNumber, assertion); err == nil && lineNumber > 0 {
-			lineNumberSuffix = fmt.Sprintf(":%d", lineNumber)
-		}
-		return &Failure{
-			Value: color.YellowString(
-				"Failure in %q\nIn test case %q, at step %d\nMethod %q in assertion %q is not supported\n",
-				tc.Classname+lineNumberSuffix,
-				tc.Name,
-				stepNumber,
-				RemoveNotPrintableChar(assert[1]),
-				RemoveNotPrintableChar(assertion),
-			),
-		}, nil
-	}
 	args := make([]interface{}, len(assert[2:]))
-	for i, v := range assert[2:] { // convert []string to []interface for assertions.func()...
-		args[i], _ = stringToType(v, actual)
+	for i, v := range assert[2:] {
+		var err error
+		args[i], err = stringToType(v, actual)
+		if err != nil {
+			return nil, fmt.Errorf("mismatched type between '%v' and '%v': %v", assert[0], v, err)
+		}
+	}
+	return &assertion{
+		Actual: actual,
+		Func:   f,
+		Args:   args,
+	}, nil
+}
+
+func check(tc TestCase, stepNumber int, assertion string, r interface{}) (*Failure, *Failure) {
+	assert, err := parseAssertions(context.Background(), assertion, r)
+	if err != nil {
+		return nil, newFailure(tc, stepNumber, assertion, err)
 	}
 
-	out := f(actual, args...)
-
-	if out != "" {
-		if lineNumber, err := findLineNumber(tc.Classname, tc.Name, stepNumber, assertion); err == nil && lineNumber > 0 {
-			lineNumberSuffix = fmt.Sprintf(":%d", lineNumber)
-		}
-		var prefix string
-		if stepNumber >= 0 {
-			prefix = color.YellowString(
-				"Failure in %q\nIn test case %q, at step %d\nAssertion %q failed",
-				tc.Classname+lineNumberSuffix,
-				tc.Name,
-				stepNumber,
-				RemoveNotPrintableChar(assertion),
-			)
-		} else {
-			// venom used as lib
-			prefix = RemoveNotPrintableChar(fmt.Sprintf("assertion: %s", assertion))
-		}
-		return nil, &Failure{Value: prefix + "\n" + out + "\n", Result: executorResult}
+	if err := assert.Func(assert.Actual, assert.Args...); err != nil {
+		return nil, newFailure(tc, stepNumber, assertion, err)
 	}
 	return nil, nil
 }
@@ -263,74 +147,6 @@ func splitAssertion(a string) []string {
 		}
 	}
 	return m
-}
-
-// assertMap contains list of assertions func
-var assertMap = map[string]func(actual interface{}, expected ...interface{}) string{
-	// "ShouldNotExist" see func check
-	"ShouldEqual":                  assertions.ShouldEqual,
-	"ShouldNotEqual":               assertions.ShouldNotEqual,
-	"ShouldAlmostEqual":            assertions.ShouldAlmostEqual,
-	"ShouldNotAlmostEqual":         assertions.ShouldNotAlmostEqual,
-	"ShouldResemble":               assertions.ShouldResemble,
-	"ShouldNotResemble":            assertions.ShouldNotResemble,
-	"ShouldPointTo":                assertions.ShouldPointTo,
-	"ShouldNotPointTo":             assertions.ShouldNotPointTo,
-	"ShouldBeNil":                  assertions.ShouldBeNil,
-	"ShouldNotBeNil":               assertions.ShouldNotBeNil,
-	"ShouldBeTrue":                 assertions.ShouldBeTrue,
-	"ShouldBeFalse":                assertions.ShouldBeFalse,
-	"ShouldBeZeroValue":            assertions.ShouldBeZeroValue,
-	"ShouldBeGreaterThan":          assertions.ShouldBeGreaterThan,
-	"ShouldBeGreaterThanOrEqualTo": assertions.ShouldBeGreaterThanOrEqualTo,
-	"ShouldBeLessThan":             assertions.ShouldBeLessThan,
-	"ShouldBeLessThanOrEqualTo":    assertions.ShouldBeLessThanOrEqualTo,
-	"ShouldBeBetween":              assertions.ShouldBeBetween,
-	"ShouldNotBeBetween":           assertions.ShouldNotBeBetween,
-	"ShouldBeBetweenOrEqual":       assertions.ShouldBeBetweenOrEqual,
-	"ShouldNotBeBetweenOrEqual":    assertions.ShouldNotBeBetweenOrEqual,
-	"ShouldContain":                assertions.ShouldContain,
-	"ShouldNotContain":             assertions.ShouldNotContain,
-	"ShouldContainKey":             assertions.ShouldContainKey,
-	"ShouldNotContainKey":          assertions.ShouldNotContainKey,
-	"ShouldBeIn":                   assertions.ShouldBeIn,
-	"ShouldNotBeIn":                assertions.ShouldNotBeIn,
-	"ShouldBeEmpty":                assertions.ShouldBeEmpty,
-	"ShouldNotBeEmpty":             assertions.ShouldNotBeEmpty,
-	"ShouldHaveLength":             assertions.ShouldHaveLength,
-	"ShouldStartWith":              assertions.ShouldStartWith,
-	"ShouldNotStartWith":           assertions.ShouldNotStartWith,
-	"ShouldEndWith":                assertions.ShouldEndWith,
-	"ShouldNotEndWith":             assertions.ShouldNotEndWith,
-	"ShouldBeBlank":                assertions.ShouldBeBlank,
-	"ShouldNotBeBlank":             assertions.ShouldNotBeBlank,
-	"ShouldContainSubstring":       ShouldContainSubstring,
-	"ShouldNotContainSubstring":    assertions.ShouldNotContainSubstring,
-	"ShouldEqualWithout":           assertions.ShouldEqualWithout,
-	"ShouldEqualTrimSpace":         assertions.ShouldEqualTrimSpace,
-	"ShouldHappenBefore":           assertions.ShouldHappenBefore,
-	"ShouldHappenOnOrBefore":       assertions.ShouldHappenOnOrBefore,
-	"ShouldHappenAfter":            assertions.ShouldHappenAfter,
-	"ShouldHappenOnOrAfter":        assertions.ShouldHappenOnOrAfter,
-	"ShouldHappenBetween":          assertions.ShouldHappenBetween,
-	"ShouldHappenOnOrBetween":      assertions.ShouldHappenOnOrBetween,
-	"ShouldNotHappenOnOrBetween":   assertions.ShouldNotHappenOnOrBetween,
-	"ShouldHappenWithin":           assertions.ShouldHappenWithin,
-	"ShouldNotHappenWithin":        assertions.ShouldNotHappenWithin,
-	"ShouldBeChronological":        assertions.ShouldBeChronological,
-}
-
-// ShouldContainSubstring receives exactly more than 2 string parameters and ensures that the first contains the second as a substring.
-func ShouldContainSubstring(actual interface{}, expected ...interface{}) string {
-	if len(expected) == 1 {
-		return assertions.ShouldContainSubstring(actual, expected...)
-	}
-
-	var arg string
-	for _, e := range expected {
-		arg += fmt.Sprintf("%v ", e)
-	}
-	return assertions.ShouldContainSubstring(actual, strings.TrimSpace(arg))
 }
 
 func stringToType(val string, valType interface{}) (interface{}, error) {
@@ -365,7 +181,7 @@ func stringToType(val string, valType interface{}) (interface{}, error) {
 		return float32(iVal), err
 	case float64:
 		iVal, err := strconv.ParseFloat(val, 64)
-		return float64(iVal), err
+		return iVal, err
 	case time.Time:
 		return time.Parse(time.RFC3339, val)
 	case time.Duration:
@@ -374,11 +190,11 @@ func stringToType(val string, valType interface{}) (interface{}, error) {
 	return val, nil
 }
 
-func findLineNumber(filename, testcase string, stepNumber int, assertion string) (int, error) {
+func findLineNumber(filename, testcase string, stepNumber int, assertion string) int {
 	countLine := 0
 	file, err := os.Open(filename)
 	if err != nil {
-		return countLine, err
+		return countLine
 	}
 	defer file.Close()
 
@@ -406,7 +222,7 @@ func findLineNumber(filename, testcase string, stepNumber int, assertion string)
 			testcaseFound = true
 			continue
 		}
-		if testcaseFound && countStep <= stepNumber && strings.Contains(line, "type") {
+		if testcaseFound && countStep <= stepNumber && (strings.Contains(line, "type") || strings.Contains(line, "script")) {
 			countStep++
 			continue
 		}
@@ -417,12 +233,12 @@ func findLineNumber(filename, testcase string, stepNumber int, assertion string)
 	}
 
 	if err := scanner.Err(); err != nil {
-		return countLine, err
+		return countLine
 	}
 
 	if !lineFound {
-		return 0, nil
+		return 0
 	}
 
-	return countLine, nil
+	return countLine
 }

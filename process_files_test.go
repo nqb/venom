@@ -32,16 +32,13 @@ func randomString(n int) string {
 }
 
 func Test_getFilesPath(t *testing.T) {
+	initTestLogger(t)
 	rand.Seed(time.Now().UnixNano())
 	log.SetLevel(log.DebugLevel)
 
-	type args struct {
-		exclude []string
-	}
 	tests := []struct {
 		init    func(t *testing.T) ([]string, error)
 		name    string
-		args    args
 		want    []string
 		wantErr bool
 	}{
@@ -51,7 +48,7 @@ func Test_getFilesPath(t *testing.T) {
 				dir, err := tempDir(t)
 				return []string{dir}, err
 			},
-			wantErr: false,
+			wantErr: true,
 		},
 		{
 			name: "Check an directory with one yaml file",
@@ -108,9 +105,9 @@ func Test_getFilesPath(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			got, err := getFilesPath(path, tt.args.exclude)
+			got, err := getFilesPath(path)
 			if (err != nil) != tt.wantErr {
-				t.Errorf("getFilesPath() error = %v, wantErr %v", err, tt.wantErr)
+				t.Errorf("getFilesPath() name:%s error = %v, wantErr %v", tt.name, err, tt.wantErr)
 				return
 			}
 

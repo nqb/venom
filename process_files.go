@@ -1,6 +1,7 @@
 package venom
 
 import (
+	"context"
 	"fmt"
 	"io/ioutil"
 	"os"
@@ -8,26 +9,15 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/hashicorp/hcl"
+	"github.com/fsamin/go-dump"
+	"github.com/ghodss/yaml"
+
+	"github.com/ovh/cds/sdk/interpolate"
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
-	"gopkg.in/yaml.v2"
 )
 
-func getFilesPath(path []string, exclude []string) (filePaths []string, err error) {
-	var fpathsExcluded []string
-
-	if len(exclude) > 0 {
-		for _, p := range exclude {
-			pe, err := filepath.Glob(p)
-			if err != nil {
-				return nil, errors.Wrapf(err, "error reading files in path %q", path)
-			}
-
-			fpathsExcluded = append(fpathsExcluded, pe...)
-		}
-	}
-
+func getFilesPath(path []string) (filePaths []string, err error) {
 	for _, p := range path {
 		p = strings.TrimSpace(p)
 
@@ -40,91 +30,77 @@ func getFilesPath(path []string, exclude []string) (filePaths []string, err erro
 
 		fpaths, err := filepath.Glob(p)
 		if err != nil {
-			log.Errorf("Error reading files on path:%s :%s", path, err)
+			log.Errorf("error reading files on path %q err:%v", path, err)
 			return nil, errors.Wrapf(err, "error reading files on path %q", path)
 		}
 
 		for _, fp := range fpaths {
-			toExclude := false
-			for _, te := range fpathsExcluded {
-				if te == fp {
-					toExclude = true
-					break
-				}
-			}
-
-			if !toExclude {
-				switch ext := filepath.Ext(fp); ext {
-				case ".hcl", ".yml", ".yaml":
-					filePaths = append(filePaths, fp)
-				}
+			switch ext := filepath.Ext(fp); ext {
+			case ".yml", ".yaml":
+				filePaths = append(filePaths, fp)
 			}
 		}
 	}
 
 	sort.Strings(filePaths)
+	if len(filePaths) == 0 {
+		return nil, fmt.Errorf("no yml file selected")
+	}
 	return filePaths, nil
+}
+
+type partialTestSuite struct {
+	Name string `json:"name" yaml:"name"`
+	Vars H      `yaml:"vars" json:"vars"`
 }
 
 func (v *Venom) readFiles(filesPath []string) (err error) {
 	for _, f := range filesPath {
-		log.Info("Reading", f)
-		dat, err := ioutil.ReadFile(f)
+		log.Info("Reading ", f)
+		btes, err := ioutil.ReadFile(f)
 		if err != nil {
-			return fmt.Errorf("Error while reading file %s err:%s", f, err)
+			return errors.Wrapf(err, "unable to read file %q", f)
 		}
 
-		ts := TestSuite{}
-		ts.Templater = newTemplater(v.variables)
+		vars, err := dump.ToStringMap(v.variables)
+		if err != nil {
+			return errors.Wrapf(err, "unable to parse variables")
+		}
+
+		content, err := interpolate.Do(string(btes), vars)
+		if err != nil {
+			return err
+		}
+
+		var partialTs partialTestSuite
+		if err := yaml.Unmarshal([]byte(content), &partialTs); err != nil {
+			Error(context.Background(), "file content: %s", content)
+			return errors.Wrapf(err, "error while unmarshal file %q", f)
+		}
+
+		var ts TestSuite
+		if err := yaml.Unmarshal([]byte(content), &ts); err != nil {
+			Error(context.Background(), "file content: %s", content)
+			return errors.Wrapf(err, "error while unmarshal file %q", f)
+		}
+
+		// Default workdir is testsuite directory
+		ts.WorkDir, err = filepath.Abs(filepath.Dir(f))
+		if err != nil {
+			return errors.Wrapf(err, "Unable to get testsuite's working directory")
+		}
+
 		ts.Package = f
-
-		// Apply templater unitl there is no more modifications
-		// it permits to include testcase from env
-		_, out := ts.Templater.apply(dat)
-		for i := 0; i < 10; i++ {
-			_, tmp := ts.Templater.apply(out)
-			if string(tmp) == string(out) {
-				break
-			}
-			out = tmp
-		}
-
-		err = nil
-		switch ext := filepath.Ext(f); ext {
-		case ".hcl":
-			err = hcl.Unmarshal(out, &ts)
-		case ".yaml", ".yml":
-			err = yaml.Unmarshal(out, &ts)
-		default:
-			return fmt.Errorf("unsupported test suite file extension: %q", ext)
-		}
-		if err != nil {
-			if len(filesPath) == 1 {
-				return err
-			}
-			log.Infof("skipping invalid venom testsuite %s: %v", f, err)
-			continue
-		}
-
-		ts.ShortName = ts.Name
-		ts.Name += " [" + f + "]"
 		ts.Filename = f
+		ts.Vars = partialTs.Vars.Clone()
 
-		if ts.Version != "" && !strings.HasPrefix(ts.Version, "1") {
-			ts.WorkDir, err = filepath.Abs(filepath.Dir(f))
-			if err != nil {
-				return fmt.Errorf("Unable to get testsuite's working directory err:%s", err)
-			}
-		} else {
-			ts.WorkDir, err = os.Getwd()
-			if err != nil {
-				return fmt.Errorf("Unable to get current working directory err:%s", err)
-			}
-		}
+		ts.Vars.Add("venom.testsuite.workdir", ts.WorkDir)
+		ts.Vars.Add("venom.testsuite.shortName", ts.Name)
+		ts.Vars.Add("venom.testsuite.filename", ts.Filename)
 
 		nSteps := 0
 		for _, tc := range ts.TestCases {
-			nSteps += len(tc.TestSteps)
+			nSteps += len(tc.testSteps)
 			if len(tc.Skipped) >= 1 {
 				ts.Skipped += len(tc.Skipped)
 			}
